@@ -80,7 +80,7 @@ int isQueueEmpty(Queue * queue){ return queue->len == 0;}
 
 //--------------------handle different entry cases (file/dir/dot)--------------------
 
-int handleDirCase(char * path, char * dir){
+void handleDirCase(char * path, char * dir){
     strcat(path, dir);
     if(opendir(path) == NULL) {
         printf("Directory %s: Permission denied.\n", path);
@@ -124,7 +124,7 @@ int searchDirectory(SearchTermAndThreadIndex * searchTermAndThreadIndex){
     struct dirent *entry;
     folder = opendir(path);
 
-    while(entry = readdir(folder))
+    while((entry = readdir(folder)))
     {
         switch (getFileType(entry->d_name)) {
             case DOT:
