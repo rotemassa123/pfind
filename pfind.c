@@ -1,5 +1,3 @@
-#include "pfind.h"
-
 #include <stdio.h>
 #include <sys/queue.h>
 #include <malloc.h>
@@ -134,7 +132,7 @@ int searchDirectory(int thread_index){
     struct dirent *entry;
     folder = opendir(path);
 
-    while(entry = readdir(folder))
+    while((entry = readdir(folder)))
     {
         switch (getFileType(entry->d_name)) {
             case DOT:
