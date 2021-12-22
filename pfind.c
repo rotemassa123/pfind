@@ -27,15 +27,11 @@ typedef struct queue{
     int len;
 }Queue;
 
-typedef struct SearchTerm{
-    char * search_term;
-    int thread_index;
-}SearchTermAndThreadIndex;
-
 pthread_mutex_t mutex;
 pthread_cond_t *conditional_variables_arr;
 Queue * directory_queue;
 Queue * thread_queue;
+char * search_term;
 
 //--------------------queue functions--------------------
 
@@ -113,7 +109,7 @@ int getFileType(char * entry) {
     return REGULAR;
 }
 
-int searchDirectory(SearchTermAndThreadIndex * searchTermAndThreadIndex){
+int searchDirectory(int thread_index){
     char* path = directory_queue->head->value;
 
     pthread_mutex_lock(&mutex);
@@ -135,52 +131,43 @@ int searchDirectory(SearchTermAndThreadIndex * searchTermAndThreadIndex){
                 break;
 
             case REGULAR:
-                handleRegularCase(path, entry->d_name, searchTermAndThreadIndex->search_term);
+                handleRegularCase(path, entry->d_name, search_term);
                 break;
         }
     }
 
     closedir(folder);
     pthread_mutex_lock(&mutex);
-    insertToQueue(thread_queue, (void *)&searchTermAndThreadIndex->thread_index);
+    insertToQueue(thread_queue, (void *)&thread_index);
     pthread_mutex_unlock(&mutex);
     return 0;
 }
 
-void* activateThread(void* item){
-    SearchTermAndThreadIndex * searchTermAndThreadIndex;
-    searchTermAndThreadIndex = (SearchTermAndThreadIndex *) item;
-
-    int thread_index = searchTermAndThreadIndex->thread_index;
+void* activateThread(void* thread_index_item){
+    int thread_index = *(int *)thread_index_item;
     while(isQueueEmpty(directory_queue))
         pthread_cond_wait(&conditional_variables_arr[thread_index], &mutex);
 
-    searchDirectory(searchTermAndThreadIndex);
+    searchDirectory(thread_index);
     return 0;
 }
 
 
 int main(int argc, char* argv[]){
     int rc;
-    SearchTermAndThreadIndex * searchTermAndThreadIndex;
-
+    int thread_index;
     if(argc != 4){}
 
     char * root_directory = argv[1];
-    char * search_term = argv[2];
+    search_term = argv[2];
     int num_of_needed_threads = atoi(argv[3]);
-
-    searchTermAndThreadIndex = malloc(sizeof(SearchTermAndThreadIndex));
-    searchTermAndThreadIndex->search_term = search_term;
 
     conditional_variables_arr = calloc(num_of_needed_threads, sizeof(pthread_cond_t));
     pthread_t thread[num_of_needed_threads];
     
     for (int i = 0; i < num_of_needed_threads; i++) {
         printf("Main: creating thread %d\n", i);
-
-        searchTermAndThreadIndex->thread_index = i;
-        rc = pthread_create(&thread[i], NULL, activateThread, searchTermAndThreadIndex);
+        rc = pthread_create(&thread[i], NULL, activateThread, &i);
         if (rc) { exit(-1); }
     }
 
@@ -189,7 +176,7 @@ int main(int argc, char* argv[]){
     thread_queue = initQueue();
 
     while(isQueueEmpty(directory_queue) && thread_queue->len == num_of_needed_threads){
-        searchTermAndThreadIndex->thread_index = *(int *)(thread_queue->head->value);
-        activateThread(searchTermAndThreadIndex);
+        thread_index = *(int *)(thread_queue->head->value);
+        activateThread((void *)&thread_index);
     }
 }
