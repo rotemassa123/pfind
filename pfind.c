@@ -8,6 +8,8 @@
 #include <dirent.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <limits.h>
+#include <stdatomic.h>
 
 //--------------------declarations and global variables--------------------
 
@@ -29,9 +31,12 @@ typedef struct queue{
 
 pthread_mutex_t mutex;
 pthread_cond_t *conditional_variables_arr;
+pthread_cond_t start_cond_var;
 Queue * directory_queue;
 Queue * thread_queue;
 char * search_term;
+int num_of_threads;
+atomic_int num_of_failed_threads = 0;
 
 //--------------------queue functions--------------------
 
@@ -74,10 +79,18 @@ Queue * initQueue(){
 
 int isQueueEmpty(Queue * queue){ return queue->len == 0;}
 
+void addDirToPath(char* fullpath, char* path, char* dir){
+    strcat(fullpath, path);
+    strcat(fullpath, dir);
+    strcat(fullpath, "/");
+}
 //--------------------handle different entry cases (file/dir/dot)--------------------
 
-int handleDirCase(char * path, char * dir){
-    strcat(path, dir);
+void handleDirCase(char * path, char * dir){
+    char fullpath[PATH_MAX];
+
+    addDirToPath(fullpath, path, dir);
+
     if(opendir(path) == NULL) {
         printf("Directory %s: Permission denied.\n", path);
         exit(1);
@@ -110,7 +123,8 @@ int getFileType(char * entry) {
 }
 
 int searchDirectory(int thread_index){
-    char* path = directory_queue->head->value;
+    char* path = malloc(sizeof(directory_queue->head->value));
+    strcpy(path, directory_queue->head->value);
 
     pthread_mutex_lock(&mutex);
     removeFromQueue(directory_queue);
@@ -140,15 +154,22 @@ int searchDirectory(int thread_index){
     pthread_mutex_lock(&mutex);
     insertToQueue(thread_queue, (void *)&thread_index);
     pthread_mutex_unlock(&mutex);
+    free(path);
+
     return 0;
 }
 
 void* activateThread(void* thread_index_item){
-    int thread_index = *(int *)thread_index_item;
-    while(isQueueEmpty(directory_queue))
-        pthread_cond_wait(&conditional_variables_arr[thread_index], &mutex);
+    pthread_cond_wait(&start_cond_var, &mutex);
+    while(thread_queue->len == num_of_threads - num_of_failed_threads
+    && isQueueEmpty(directory_queue)){
+        int thread_index = *(int *)thread_index_item;
+        while(isQueueEmpty(directory_queue))
+            pthread_cond_wait(&conditional_variables_arr[thread_index], &mutex);
 
-    searchDirectory(thread_index);
+        searchDirectory(thread_index);
+        pthread_cond_wait(&conditional_variables_arr[thread_index], &mutex);
+    }
     return 0;
 }
 
@@ -160,12 +181,12 @@ int main(int argc, char* argv[]){
 
     char * root_directory = argv[1];
     search_term = argv[2];
-    int num_of_needed_threads = atoi(argv[3]);
+    num_of_threads = atoi(argv[3]);
 
-    conditional_variables_arr = calloc(num_of_needed_threads, sizeof(pthread_cond_t));
-    pthread_t thread[num_of_needed_threads];
+    conditional_variables_arr = calloc(num_of_threads, sizeof(pthread_cond_t));
+    pthread_t thread[num_of_threads];
     
-    for (int i = 0; i < num_of_needed_threads; i++) {
+    for (int i = 0; i < num_of_threads; i++) {
         printf("Main: creating thread %d\n", i);
         rc = pthread_create(&thread[i], NULL, activateThread, &i);
         if (rc) { exit(-1); }
@@ -175,8 +196,11 @@ int main(int argc, char* argv[]){
     insertToQueue(directory_queue, root_directory);
     thread_queue = initQueue();
 
-    while(isQueueEmpty(directory_queue) && thread_queue->len == num_of_needed_threads){
+    pthread_cond_broadcast(&start_cond_var);
+
+    while(isQueueEmpty(directory_queue) && thread_queue->len == num_of_threads){
         thread_index = *(int *)(thread_queue->head->value);
-        activateThread((void *)&thread_index);
+        pthread_cond_signal(&conditional_variables_arr[thread_index]);
+        removeFromQueue(thread_queue);
     }
 }
