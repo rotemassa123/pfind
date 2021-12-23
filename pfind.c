@@ -27,7 +27,8 @@ typedef struct queue{
     int len;
 }Queue;
 
-pthread_mutex_t mutex;
+pthread_mutex_t directory_queue_mutex;
+pthread_mutex_t thread_queue_mutex;
 pthread_cond_t *conditional_variables_arr;
 pthread_cond_t start_cond_var;
 Queue * directory_queue;
@@ -102,9 +103,9 @@ void handleDirCase(char * path, char * dir){
         exit(1);
     }
 
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&directory_queue_mutex);
     insertToQueue(directory_queue, path);
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&directory_queue_mutex);
 }
 
 void handleRegularCase(char * path, char * dir, char * term) {
@@ -132,9 +133,9 @@ int searchDirectory(int thread_index){
     char* path = malloc(sizeof(directory_queue->head->value));
     strcpy(path, directory_queue->head->value);
 
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&directory_queue_mutex);
     removeFromQueue(directory_queue);
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&directory_queue_mutex);
 
     DIR *folder;
     struct dirent *entry;
@@ -157,21 +158,21 @@ int searchDirectory(int thread_index){
     }
 
     closedir(folder);
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&thread_queue_mutex);
     insertToQueue(thread_queue, (void *)&thread_index);
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&thread_queue_mutex);
     free(path);
 
     return 0;
 }
 
 void* activateThread(void* thread_index_item){
-    pthread_cond_wait(&start_cond_var, &mutex);
+    pthread_cond_wait(&start_cond_var);
     while(thread_queue->len == num_of_threads - num_of_failed_threads
     && isQueueEmpty(directory_queue)){
         int thread_index = *(int *)thread_index_item;
         while(isQueueEmpty(directory_queue))
-            pthread_cond_wait(&conditional_variables_arr[thread_index], &mutex);
+            pthread_cond_wait(&conditional_variables_arr[thread_index]);
 
         searchDirectory(thread_index);
         pthread_cond_wait(&conditional_variables_arr[thread_index], &mutex);
@@ -181,6 +182,9 @@ void* activateThread(void* thread_index_item){
 
 
 int main(int argc, char* argv[]){
+    pthread_mutex_init(&directory_queue_mutex, NULL);
+    pthread_mutex_init(&thread_queue_mutex, NULL);
+
     int rc;
     int thread_index;
     if(argc != 4){printf("FUFUFUUUUUUUUUUU"); exit(1);}
@@ -194,6 +198,7 @@ int main(int argc, char* argv[]){
 
     for (int i = 0; i < num_of_threads; i++) {
         printf("Main: creating thread %d\n", i);
+        pthread_cond_init(&conditional_variables_arr[i], NULL);
         rc = pthread_create(&thread[i], NULL, activateThread, &i);
         if (rc) { exit(-1); }
     }
@@ -203,10 +208,20 @@ int main(int argc, char* argv[]){
     insertToQueue(directory_queue, (void*) root_directory);
 
     pthread_cond_broadcast(&start_cond_var);
+    printf("signaled all threads to begin working!");
 
     while(directory_queue->len > 0 && thread_queue->len == num_of_threads - num_of_failed_threads){
-        thread_index = *(int *)(thread_queue->head->value);
-        pthread_cond_signal(&conditional_variables_arr[thread_index]);
-        removeFromQueue(thread_queue);
+        if(thread_queue->len > 0){
+            thread_index = *(int *)(thread_queue->head->value);
+            pthread_cond_signal(&conditional_variables_arr[thread_index]);
+            removeFromQueue(thread_queue);//no need for mutex lock here since only main
+                                          // thread can remove from thread_queue (meaning, reference the head)
+        }
     }
+
+    for (int i = 0; i < num_of_threads; i++)
+        pthread_cond_destroy(&conditional_variables_arr[i]);
+
+    pthread_mutex_destroy(&directory_queue_mutex);
+    pthread_mutex_destroy(&thread_queue_mutex);
 }
