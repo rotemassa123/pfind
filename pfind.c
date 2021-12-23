@@ -27,6 +27,7 @@ typedef struct queue{
     int len;
 }Queue;
 
+int are_all_threads_idle = 0;
 pthread_mutex_t mutex;
 pthread_cond_t *conditional_variables_arr;
 pthread_cond_t start_cond_var;
@@ -131,6 +132,7 @@ int getFileType(char * entry) {
 int searchDirectory(int thread_index){
     char* path = malloc(sizeof(directory_queue->head->value));
     strcpy(path, directory_queue->head->value);
+    printf("thread #%d started searching dir %s", thread_index, path);
 
     pthread_mutex_lock(&mutex);
     removeFromQueue(directory_queue);
@@ -166,10 +168,12 @@ int searchDirectory(int thread_index){
 }
 
 void* activateThread(void* thread_index_item){
+    int thread_index = *(int *)thread_index_item;
+    printf("thread #%d is going to sleep!\n", thread_index);
+    fflush(stdin);
     pthread_cond_wait(&start_cond_var, &mutex);
-    while(thread_queue->len == num_of_threads - num_of_failed_threads
-    && isQueueEmpty(directory_queue)){
-        int thread_index = *(int *)thread_index_item;
+    printf("thread #%d is awake!\n", thread_index);
+    while(are_all_threads_idle == 0){
         while(isQueueEmpty(directory_queue))
             pthread_cond_wait(&conditional_variables_arr[thread_index], &mutex);
 
@@ -206,8 +210,8 @@ int main(int argc, char* argv[]){
     thread_queue = initQueue();
     insertToQueue(directory_queue, (void*) root_directory);
 
-    pthread_cond_broadcast(&start_cond_var);
-    printf("signaled all threads to begin working!");
+    pthread_cond_signal(&start_cond_var);
+    printf("signaled all threads to begin working!\n");
 
     while(directory_queue->len > 0 && thread_queue->len == num_of_threads - num_of_failed_threads){
         if(thread_queue->len > 0){
@@ -215,9 +219,11 @@ int main(int argc, char* argv[]){
             pthread_cond_signal(&conditional_variables_arr[thread_index]);
             removeFromQueue(thread_queue);//no need for mutex lock here since only main
                                           // thread can remove from thread_queue (meaning, reference the head)
+            printf("signaled thread #%d to start working and removed him from queue!\n", thread_index);
         }
     }
 
+    are_all_threads_idle = 1;
     for (int i = 0; i < num_of_threads; i++)
         pthread_cond_destroy(&conditional_variables_arr[i]);
 
