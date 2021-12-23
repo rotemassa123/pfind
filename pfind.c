@@ -42,12 +42,18 @@ int insertToQueue(Queue *queue, void* value){
     Node * node;
 
     node = malloc(sizeof(Node));
-
     node->value = value;
-    node->next = queue->head;
 
-    queue->tail->prev = node;
-    queue->tail = node;
+    if(queue->len == 0){
+        queue->head = node;
+        queue->tail = node;
+    }
+
+    else{
+        node->next = queue->tail;
+        queue->tail->prev = node;
+        queue->tail = node;
+    }
 
     (queue->len)++;
     return 0;
@@ -60,6 +66,8 @@ int removeFromQueue(Queue* queue){//removes head
 
     queue->head = node->prev;
     queue->head->next = NULL;
+
+    if(queue->len == 1){ queue->tail = NULL; }
 
     free(node->value);
     free(node);
@@ -175,7 +183,7 @@ void* activateThread(void* thread_index_item){
 int main(int argc, char* argv[]){
     int rc;
     int thread_index;
-    if(argc != 4){}
+    if(argc != 4){printf("FUFUFUUUUUUUUUUU"); exit(1);}
 
     char * root_directory = argv[1];
     search_term = argv[2];
@@ -183,7 +191,7 @@ int main(int argc, char* argv[]){
 
     conditional_variables_arr = calloc(num_of_threads, sizeof(pthread_cond_t));
     pthread_t thread[num_of_threads];
-    
+
     for (int i = 0; i < num_of_threads; i++) {
         printf("Main: creating thread %d\n", i);
         rc = pthread_create(&thread[i], NULL, activateThread, &i);
@@ -191,12 +199,12 @@ int main(int argc, char* argv[]){
     }
 
     directory_queue = initQueue();
-    insertToQueue(directory_queue, root_directory);
     thread_queue = initQueue();
+    insertToQueue(directory_queue, (void*) root_directory);
 
     pthread_cond_broadcast(&start_cond_var);
 
-    while(isQueueEmpty(directory_queue) && thread_queue->len == num_of_threads){
+    while(directory_queue->len > 0 && thread_queue->len == num_of_threads - num_of_failed_threads){
         thread_index = *(int *)(thread_queue->head->value);
         pthread_cond_signal(&conditional_variables_arr[thread_index]);
         removeFromQueue(thread_queue);
