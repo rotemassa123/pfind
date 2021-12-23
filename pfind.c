@@ -218,7 +218,7 @@ int main(int argc, char* argv[]){
             printf("signaled thread #%d to start working and removed him from queue!\n", thread_index);
         }
     }
-
+    int justtest;
     are_all_threads_idle = 1;
     for (int i = 0; i < num_of_threads; i++)
         pthread_cond_destroy(&conditional_variables_arr[i]);
