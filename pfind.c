@@ -28,6 +28,7 @@ typedef struct queue{
 
 int are_all_threads_idle = 0;
 pthread_mutex_t cond_var_mutex;
+pthread_mutex_t remove_mutex;
 pthread_mutex_t directory_mutex;
 pthread_mutex_t thread_mutex;
 pthread_cond_t *conditional_variables_arr;
@@ -41,7 +42,7 @@ atomic_int num_of_sleeping_threads = 0;
 
 //--------------------queue functions--------------------
 
-int insertToQueue(Queue *queue, void* value){
+int Enqueue(Queue *queue, void* value){
     Node * node;
 
     node = malloc(sizeof(Node));
@@ -60,7 +61,7 @@ int insertToQueue(Queue *queue, void* value){
     return 0;
 }
 
-int removeFromQueue(Queue* queue){//removes head
+int Dequeue(Queue* queue){//removes head
     Node * node;
     node = queue->head;
     queue->head = node->prev;
@@ -84,12 +85,63 @@ Queue * initQueue(){
     return queue;
 }
 
+int getIndexFromHead(Queue * queue, long thread_index){//start from head and scan to tail untill relevant is found
+    int index = 0;
+    Node * node = queue->head;
+    while((long)node->value != thread_index){
+        index++;
+        node = node->prev;
+    }
+
+    return index;
+}
+
+Node * getByIndex(Queue * queue, int index){//index 0 is head
+    int i;
+    Node* node;
+    node = queue->head;
+    for(i = 0; i < index; i++)
+        node = node->prev;
+
+    return node;
+}
+
+Node * removeFromQueueByIndex(Queue * queue, int index){//TODO: needs fixes!
+    Node* node;
+    node = getByIndex(queue, index);
+
+    if(queue->len == 1){
+        queue->head = NULL;
+        queue->tail = NULL;
+    }
+
+    else if(index == 0){
+        queue->head = node->prev;
+        queue->head->next = NULL;
+    }
+
+    else if(index == queue->len - 1){
+        queue->tail = node->next;
+        queue->tail->prev = NULL;
+    }
+
+    else{
+        node->prev->next = node->next;
+        node->next->prev = node->prev;
+    }
+
+    node->next = NULL;
+    node->prev = NULL;
+
+    (queue->len)--;
+    return node;
+}
+//--------------------handle different entry cases (file/dir/dot)--------------------
 void addEntryToPath(char* fullpath, char* path, char* entry){
     strcpy(fullpath, path);
     strcat(fullpath, "/");
     strcat(fullpath, entry);
 }
-//--------------------handle different entry cases (file/dir/dot)--------------------
 
 void handleDirCase(char * path, char * dir){
     char fullpath[PATH_MAX];
@@ -104,7 +156,7 @@ void handleDirCase(char * path, char * dir){
 
     pthread_mutex_lock(&directory_mutex);
     printf("inserting path %s to directory queue!\n", fullpath);
-    insertToQueue(directory_queue, fullpath);
+    Enqueue(directory_queue, fullpath);
     pthread_mutex_unlock(&directory_mutex);
 }
 
@@ -113,8 +165,7 @@ void handleRegularCase(char * path, char * file, char * term) {
     addEntryToPath(fullpath, path, file);
     printf("handling file:%s in path:%s\n", file, path);
     if(strstr(file, term) != NULL){
-        strcat(path, file);
-        printf("FOUND RELEVANT FILE: %s\n", path);
+        printf("FOUND RELEVANT FILE: %s\n", fullpath);
     }
 }
 
@@ -132,18 +183,27 @@ int getFileType(char * entry) {
     return REGULAR;
 }
 
-void searchDirectory(long thread_index){
+void searchDirectory(long thread_id){
     char path[PATH_MAX];
+    int index;
+    Node * node;
 
+    perror("locking!\n");
+    //pthread_mutex_lock(&remove_mutex);
+    perror("locked!\n");
+    index = getIndexFromHead(thread_queue, thread_id);
+    perror("got index!\n");
+    node = removeFromQueueByIndex(directory_queue, index);
+    perror("got node!\n");
+    removeFromQueueByIndex(thread_queue, index);
+    perror("removed node frmo queue!\n");
+    pthread_mutex_unlock(&remove_mutex);
 
-    strcpy(path, (char *)directory_queue->head->value);
-    removeFromQueue(directory_queue);
-    pthread_mutex_unlock(&directory_mutex);
-
+    strcpy(path, (char *)node->value);
     DIR *dir;
     struct dirent *entry;
     if((dir = opendir(path)) == NULL){ perror("COULDN'T OPEN FUCKING GILAD!\n"); exit(1); }
-    printf("thread #%lu started searching dir %s\n", thread_index, path);
+    printf("thread #%lu started searching dir %s\n", thread_id, path);
 
 
     while((entry = readdir(dir)))
@@ -164,8 +224,8 @@ void searchDirectory(long thread_index){
     }
     closedir(dir);
     pthread_mutex_lock(&thread_mutex);
-    printf("inserting thread #%lu into queue!\n", thread_index);
-    insertToQueue(thread_queue, (void *)&thread_index);
+    printf("inserting thread #%lu into queue!\n", thread_id);
+    Enqueue(thread_queue, (void *) &thread_id);
     pthread_mutex_unlock(&thread_mutex);
     exit(-1);
 }
@@ -179,25 +239,52 @@ void threadSleep(long thread_index){
 }
 
 void* activateThread(void* thread_index_item){
-    long thread_index = (long)thread_index_item;
-
-    printf("thread #%lu is going to sleep!\n", thread_index);
+    long thread_id = (long)thread_index_item;
+    int queue_index;
     num_of_sleeping_threads++;
+    perror("thread going to sleep...\n");
     pthread_cond_wait(&start_cond_var, &cond_var_mutex);
-    printf("thread #%lu is awake!\n", thread_index);
     num_of_sleeping_threads--;
+    pthread_mutex_unlock(&cond_var_mutex);
+    perror("thread awake!\n");
+    while(directory_queue->len > 0 || num_of_sleeping_threads + num_of_failed_threads != num_of_threads){
+        pthread_mutex_lock(&thread_mutex);
+        perror("Enqueued thread!\n");
+        Enqueue(thread_queue, (void *)thread_id);
+        pthread_mutex_unlock(&thread_mutex);
 
-    while(are_all_threads_idle == 0){
-        pthread_mutex_lock(&directory_mutex);
-        if(directory_queue->len == 0){
-            pthread_mutex_unlock(&directory_mutex);
-            threadSleep(thread_index);
+        pthread_mutex_lock(&cond_var_mutex);
+        if(directory_queue->len == 0){//queue is empty
+            perror("queue is empty!\n");
+            num_of_sleeping_threads++;
+            pthread_cond_wait(&conditional_variables_arr[thread_id], &cond_var_mutex);
+            if(num_of_sleeping_threads + num_of_failed_threads == num_of_threads){//work done, needs to die.
+                pthread_mutex_unlock(&cond_var_mutex);
+                pthread_exit(0);
+            }
+            num_of_sleeping_threads--;
+            pthread_mutex_unlock(&cond_var_mutex);
+            searchDirectory(thread_id);
         }
-        printf("directory queue->len: %d\n", directory_queue->len);
-        searchDirectory(thread_index);
-        threadSleep(thread_index);
+        else{//queue is not empty
+            perror("queue is not empty!\n");
+            pthread_mutex_unlock(&cond_var_mutex);
+            pthread_mutex_lock(&remove_mutex);
+            queue_index = getIndexFromHead(thread_queue, thread_id);
+            if(queue_index >= directory_queue->len){
+                num_of_sleeping_threads++;
+                perror("waiting for signal from main...\n");
+                pthread_cond_wait(&conditional_variables_arr[thread_id], &remove_mutex);
+                if(num_of_sleeping_threads + num_of_failed_threads == num_of_threads && directory_queue->len == 0){//work done needs to die!
+                    pthread_mutex_unlock(&remove_mutex);
+                    pthread_exit(0);
+                }
+                num_of_sleeping_threads--;
+            }
+            perror("starting to search dir!\n");
+            searchDirectory(thread_id);
+        }
     }
-
     return 0;
 }
 
@@ -205,6 +292,7 @@ void* activateThread(void* thread_index_item){
 int main(int argc, char* argv[]){
     pthread_mutex_init(&thread_mutex, NULL);
     pthread_mutex_init(&directory_mutex, NULL);
+    pthread_mutex_init(&remove_mutex, NULL);
     pthread_mutex_init(&cond_var_mutex, NULL);
     pthread_cond_init(&start_cond_var, NULL);
 
@@ -223,27 +311,29 @@ int main(int argc, char* argv[]){
     conditional_variables_arr = calloc(num_of_threads, sizeof(pthread_cond_t));
     pthread_t threads[num_of_threads];
 
+    directory_queue = initQueue();
+    thread_queue = initQueue();
+    Enqueue(directory_queue, (void *) root_directory);
+
     for (long i = 0; i < num_of_threads; i++) {
         printf("Main: creating thread %lu\n", i);
         pthread_cond_init(&conditional_variables_arr[i], NULL);
         if ((pthread_create(&threads[i], NULL, activateThread, (void *) i))) { exit(-1); }
     }
 
-    directory_queue = initQueue();
-    thread_queue = initQueue();
-    insertToQueue(directory_queue, (void*) root_directory);
 
     while(num_of_sleeping_threads < num_of_threads){ sleep(1); }
+    sleep(1);
     pthread_cond_signal(&start_cond_var);
     printf("signaled all threads to begin working!\n");
 
-    while(directory_queue->len > 0 || thread_queue->len != num_of_threads - num_of_failed_threads){
+    while(num_of_sleeping_threads != num_of_threads - num_of_failed_threads){
         sleep(5);
         printf("IM INSIDE THE WHILE LOOP!!!\n");
-        if(thread_queue->len > 0){
+        if(thread_queue->len > 0 && directory_queue->len > 0 ){
             thread_index = *(int *)(thread_queue->head->value);
             pthread_cond_signal(&conditional_variables_arr[thread_index]);
-            removeFromQueue(thread_queue);//no need for mutex lock here since only main
+            Dequeue(thread_queue);//no need for mutex lock here since only main
             // thread can remove from thread_queue (meaning, reference the head)
             printf("signaled thread #%d to start working and removed him from queue!\n", thread_index);
         }
